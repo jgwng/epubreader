@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EPUB.js Spreads Example</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
+    <script src="./epub.js"></script>
+
+    <style>
+        @font-face {
+          font-family: 'batang';
+          font-style: normal;
+          font-weight: 400;
+          src: url('//cdn.jsdelivr.net/korean-webfonts/1/orgs/othrs/kpa/BareunBatang/BareunBatangOTFM.woff2') format('woff2'), url('//cdn.jsdelivr.net/korean-webfonts/1/orgs/othrs/kpa/BareunBatang/BareunBatangOTFM.woff') format('woff');
+        }
+        @font-face {
+          font-family: 'myeongjo';
+          font-style: normal;
+          font-weight: 400;
+          src: url('https://fonts.gstatic.com/s/nanummyeongjo/v17/9Btx3DZF0dXLMZlywRbVRNhxy1RP.woff2') format('woff2');
+        }
+        @font-face {
+          font-family: 'pretendard';
+          font-style: normal;
+          font-weight: 400;
+          src: url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/woff2/Pretendard-Regular.woff2') format('woff2'),
+               url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/woff/Pretendard-Regular.woff') format('woff');
+        }
+    </style>
+
+</head>
+<body style="margin:0px;">
+<div id="viewer"></div>
+
+<script>
+    var book = ePub();
+    var rendition;
+    var totalPages = 0;
+
+    function loadBook({base64Str,manager,cfi, width, height, fontSize, fontFamily, lineHeight, padding, fontColor, backgroundColor, pageNavigation}) {
+      const binaryStr = base64Str;
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+
+      document.getElementById('viewer').style.height = height + "px";
+
+      book.open(bytes).then(() => {
+        rendition = book.renderTo("viewer", {
+          manager: manager,
+          flow: pageNavigation,
+          width: "100vw",
+          height: "100vh",
+          snap: true,
+          spread: 'auto',
+          allowScriptedContent: true,
+          defaultDirection: 'ltr'
+        });
+
+        rendition.themes.register("custom", {
+          body: {
+            'font-size': fontSize + "px",
+            'line-height': lineHeight,
+            'font-family': fontFamily,
+            'padding': padding,
+            'color': `${fontColor} !important`,
+            'background-color': `${backgroundColor} !important`
+          },
+          '*': {
+            'color': `${fontColor} !important`,
+            'background-color': `${backgroundColor} !important`
+          }
+        });
+        rendition.themes.select("custom");
+        if (cfi && cfi.trim() !== '') {
+          rendition.display(cfi);
+        } else {
+          rendition.display(); // 기본 첫 페이지
+        }
+
+        book.ready.then(() => {
+          book.locations.generate(1500).then(() => {
+            totalPages = book.locations.length();
+            window.flutter_inappwebview.callHandler("onTotalPages", totalPages);
+          });
+        });
+
+        addEventListeners();
+      });
+    }
+
+    function addEventListeners() {
+      rendition.on("rendered", () => {
+        rendition.getContents().forEach(attachOnceTouch);
+      });
+
+      rendition.on("relocated", function(location) {
+        const currentCfi = location.start.cfi;
+        const currentPage = book.locations.locationFromCfi(currentCfi) + 1;
+        var percent = location.start.percentage;
+        window.flutter_inappwebview.callHandler("onPageChanged", {
+          currentCfi: currentCfi,
+          current: currentPage,
+          total: totalPages,
+          percent: percent
+        });
+      });
+    }
+
+    function attachOnceTouch(content) {
+      if (!content.window) return;
+
+      if (content.window._touchHandlerAttached) return;
+      content.window._touchHandlerAttached = true;
+
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let touchStartTime = 0;
+
+      content.document.addEventListener("touchstart", function (e) {
+        const touch = e.touches[0];
+        touchStartX = touch.screenX;
+        touchStartY = touch.screenY;
+        touchStartTime = Date.now();
+      });
+
+      content.document.addEventListener("touchend", function (e) {
+        if (e.changedTouches.length === 0) return;
+
+        const touch = e.changedTouches[0];
+        const endX = touch.screenX;
+        const endY = touch.screenY;
+
+        const dx = endX - touchStartX;
+        const dy = endY - touchStartY;
+        const duration = Date.now() - touchStartTime;
+
+        const isSwipe = Math.abs(dx) > 30 || Math.abs(dy) > 30;
+        const isHorizontal = Math.abs(dx) > Math.abs(dy);
+
+        if (isSwipe) {
+          const direction = isHorizontal
+            ? (dx > 0 ? "right" : "left")
+            : (dy > 0 ? "down" : "up");
+
+          window.flutter_inappwebview.callHandler("onSwipe", {
+            direction,
+            screenX: touch.screenX,
+            screenY: touch.screenY
+          });
+        } else {
+          window.flutter_inappwebview.callHandler("onTouchEnd", {
+            screenX: touch.screenX,
+            screenY: touch.screenY
+          });
+        }
+      });
+    }
+
+    function prevPage() {
+      rendition.prev();
+    }
+
+    function nextPage() {
+      rendition.next();
+    }
+
+    function goToPage(pageNum) {
+      if (!book || !book.locations) return;
+      const total = book.locations.length();
+      const targetIndex = Math.max(0, Math.min(pageNum - 1, total - 1));
+      const cfi = book.locations.cfiFromLocation(targetIndex);
+      rendition.display(cfi);
+    }
+
+    function updateStyle({fontSize, fontFamily, lineHeight, padding, fontColor, backgroundColor, pageNavigation, width, height}) {
+      rendition.themes.register("custom", {
+        body: {
+          'font-size': fontSize + "px",
+          'line-height': lineHeight,
+          'font-family': fontFamily,
+          'padding': padding,
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        },
+        '*': {
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        }
+      });
+      rendition.themes.select("custom");
+
+      book.locations.generate(1500).then(() => {
+        totalPages = book.locations.length();
+        window.flutter_inappwebview.callHandler("onTotalPages", totalPages);
+
+        rendition.currentLocation().then(location => {
+          const current = book.locations.locationFromCfi(location.start.cfi) + 1;
+          window.flutter_inappwebview.callHandler("onPageChanged", {
+            current: current,
+            total: totalPages
+          });
+        });
+      });
+    }
+
+    function changeFontBGColor({fontColor, backgroundColor}) {
+      rendition.themes.register("custom", {
+        body: {
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        },
+        '*': {
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        }
+      });
+      rendition.themes.select("custom");
+    }
+
+    function updateFlow({fontSize,manager, fontFamily, lineHeight, padding, fontColor, backgroundColor, pageNavigation, width, height}) {
+      const currentCfi = (rendition.location && rendition.location.start) ? rendition.location.start.cfi : undefined;
+
+      rendition.destroy();
+
+      rendition = book.renderTo("viewer", {
+        manager: manager,
+        flow: pageNavigation,
+        width: "100vw",
+        height: "100vh",
+        snap: true,
+        spread: 'auto',
+        allowScriptedContent: true,
+        defaultDirection: 'ltr'
+      });
+
+      rendition.themes.register("custom", {
+        body: {
+          'font-size': fontSize + "px",
+          'line-height': lineHeight,
+          'font-family': fontFamily,
+          'padding': padding,
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        },
+        '*': {
+          'color': `${fontColor} !important`,
+          'background-color': `${backgroundColor} !important`
+        }
+      });
+      rendition.themes.select("custom");
+      rendition.display(currentCfi || undefined);
+      addEventListeners();
+    }
+
+    // Export to Flutter
+    window.loadBook = loadBook;
+    window.updateStyle = updateStyle;
+    window.updateFlow = updateFlow;
+    window.changeFontBGColor = changeFontBGColor;
+</script>
+</body>
+</html>
